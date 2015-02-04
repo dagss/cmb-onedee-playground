@@ -1,33 +1,31 @@
 import numpy as np
+from scipy.fftpack import dct, idct
 from matplotlib.pyplot import *
 
 """
-Problem:
+Assume we have a true signal s, with power spectrum Cl.
+
+Then the signal is low-pass-filtered and noise is added.
 
 
 """
 
+constrained_realization = True
+# ^^^ if False, it's a Wiener-filter. If True, we will fill in unknown information with
+# a random sample that is consistent with our data model
+npix = 512
+sigma = 1  # standard deviation of per-pixel noise
+beam_param = 0.01  # how much smoothing to do
 
+mask = np.ones(npix)
+mask[100:200] = 0  # chunk masked out
+mask[400:450] = 0  # chunk masked out
+rms = 1 + 0.9 * np.sin(np.linspace(0, 2 * np.pi, npix))  # rms is "sigma per pixel", use a sin-function to make some parts have less noise than others
+rms *= sigma
 
-rng = np.random.RandomState(2)
+rng = np.random.RandomState(2)  # rng to set up fake data, can be static
+rng_sample = np.random  # rng used to draw constrained realizations, should be different each run
 
-# It's convenient to deal with real arrays instead of complex arrays, so
-# we use a different FFT convention storing the harmonic signal as
-# [Im(x_{n-1}) ... Im(x_1) Re(x_0) Re(x_1) ... Re(x_n)
-#
-# This repacking would have been a unitary transform if we had introduced
-# some scaling (which I'm too lazy to find now), so it's OK from a linear
-# algebra perspective.
-
-def irfft(x):
-    mid = (x.shape[0] - 1) // 2
-    repacked_x = x[mid:].copy().astype(np.complex)
-    repacked_x[1:-1] += 1j * x[:mid][::-1]
-    return np.fft.irfft(repacked_x)
-
-def rfft(x):
-    y = np.fft.rfft(x)
-    return np.concatenate([y.imag[1:][::-1], y.real[:-1]])
 
 #
 # Utilities
@@ -53,32 +51,18 @@ def load_Cl(lmax):
     Cl[0] = Cl[1] = Cl[2]
     return Cl
 
-lmax = 512 + 1
-Cl = load_Cl(lmax - 1)
-bl = np.loadtxt('beam.txt')[:lmax]
+lmax = npix - 1
+Cl = load_Cl(lmax)
+ls = np.arange(lmax + 1)
+bl = np.exp(-0.5 * ls * (ls+1) * beam_param**2)
 
-packed_Cl = np.concatenate([Cl[1:-1][::-1], Cl])
-packed_bl = np.concatenate([bl[1:-1][::-1], bl])
-
-#
-# Generate a fake noise map in pixel domain
-#
-npix = 1024
-noise_standard_deviation = 0.04
-Ninv = np.ones(npix) / noise_standard_deviation**2
-
-# Mask out parts of it...
-
-mask = np.ones(npix)
-mask[100:200] = 0  # one big chunk masked out
-mask[800:850] = 0  # one big chunk masked out
-
+Ninv = 1 / rms**2
 Ninv *= mask
 
 # Generate fake data
-true_signal_harmonic = rng.normal(size=packed_Cl.shape) * np.sqrt(packed_Cl)
+true_signal_harmonic = rng.normal(size=Cl.shape) * np.sqrt(Cl)
 true_signal_harmonic[0] = 0
-noise = noise_standard_deviation * rng.normal(size=npix)
+noise = rms * rng.normal(size=npix)
 
 # Now compute:
 # d = Y B s  ;
@@ -87,7 +71,7 @@ noise = noise_standard_deviation * rng.normal(size=npix)
 #    s is original signal
 #    d is observed data
 
-data = irfft(packed_bl * true_signal_harmonic) + noise
+data = idct(bl * true_signal_harmonic) + noise
 data *= mask
 
 #
@@ -96,23 +80,29 @@ data *= mask
 # if problem is A x = b
 #
 
-Y = hammer(irfft, npix)
+Y = hammer(idct, npix)
 
 def matvec(x_in):
     # A = S^{-1} + B Y^T N^{-1} Y B
-    x = x_in * packed_bl # B
-    x_pix = irfft(x) # Y
+    x = x_in * bl # B
+    x_pix = idct(x) # Y
     x_pix *= Ninv # N^{-1}, a diagonal matrix
-    # Y^T could be 'rfft' with the introduction of some scaling, but I'm too
-    # lazy to find the appropriate scaling for Fourier transforms now, and
-    # simply use a dense matrix-vector multiplication that doesn't scale well
-    x = np.dot(Y.T, x_pix)  # Y^T
-    x *= packed_bl # B
-    return x + x_in / packed_Cl  # x + S^{-1} x_in
+
+    # At this point we want "transpose idct", which differs from "dct" by a scale factor.
+    # Just use the O(npix^2) multiplication for now... there should be some rescaling
+    # combined with `dct` that makes this fast.
+    x = np.dot(Y.T, x_pix)
+    x *= bl # B
+    return x + x_in / Cl  # x + S^{-1} x_in
 
 # Solve system densely
 A = hammer(matvec, npix)
-b = packed_bl * np.dot(Y.T, data)  # right-hand side: B Y^T d
+b = bl * np.dot(Y.T, Ninv * data)  # right-hand side: B Y^T d
+
+if constrained_realization:
+    b += bl * np.dot(Y.T, np.sqrt(Ninv) * rng_sample.normal(size=npix))
+    b += np.sqrt(1/Cl) * rng_sample.normal(size=lmax + 1)
+
 solution = np.linalg.solve(A, b)  # to be done with iterative method...
 
 
@@ -122,16 +112,19 @@ fig = gcf()
 axs = [fig.add_subplot(4, 1, i) for i in range(1, 5)]
 
 # Original "CMB"
-axs[0].plot(irfft(true_signal_harmonic))
+axs[0].plot(idct(true_signal_harmonic))
 
 # After blurring by instrument
-axs[1].plot(irfft(packed_bl * true_signal_harmonic))
+axs[1].plot(idct(bl * true_signal_harmonic))
 
 # Adding noise and masking
 axs[2].plot(data)
 
 # Adding noise and masking
-axs[3].plot(irfft(solution))
+axs[3].plot(idct(solution))
 
+for ax, title in zip(axs, ['Signal', 'Blurred', 'With noise', 'Reconstructed']):
+    ax.set_ylim((-300, 300))
+    ax.set_ylabel(title)
 
 draw()
