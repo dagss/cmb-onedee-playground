@@ -10,7 +10,7 @@ constrained_realization = True
 # a random sample that is consistent with our data model
 npix = 512
 sigma = 1  # standard deviation of per-pixel noise
-beam_param = 0.01  # how much smoothing to do
+beam_param = 0.01  # how much blurring to do
 
 mask = np.ones(npix)
 mask[100:200] = 0  # chunk masked out
