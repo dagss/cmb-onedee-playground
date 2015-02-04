@@ -2,14 +2,9 @@ import numpy as np
 from scipy.fftpack import dct, idct
 from matplotlib.pyplot import *
 
-"""
-Assume we have a true signal s, with power spectrum Cl.
-
-Then the signal is low-pass-filtered and noise is added.
-
-
-"""
-
+#
+# Parameters
+#
 constrained_realization = True
 # ^^^ if False, it's a Wiener-filter. If True, we will fill in unknown information with
 # a random sample that is consistent with our data model
